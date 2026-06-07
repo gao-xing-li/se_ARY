@@ -36,6 +36,9 @@ Try:
   POST http://127.0.0.1:8000/proxy/race/001/register
        {"race_public_id":"race_001","rider_id":"rider_demo_001","client_request_id":"req_001"}
   GET  http://127.0.0.1:8000/debug/demo-journey
+  GET  http://127.0.0.1:8000/debug/evidence-dashboard
+  GET  http://127.0.0.1:8000/evidence-dashboard
+  GET  http://127.0.0.1:8000/debug/projection-version-hash-demo
   GET  http://127.0.0.1:8000/debug/privacy-check
   GET  http://127.0.0.1:8000/debug/ary-store
   GET  http://127.0.0.1:9001/debug/organizer-store
@@ -244,8 +247,8 @@ ary_public_metadata_store: Dict[str, Dict[str, Any]] = {
     "race_001": {
         "race_public_id": "race_001",
         "series_id": "ary-grs-001",
-        "title": "ARY GRS 001 Genesis Ride",
-        "public_summary": "Organizer-disclosed public race page.",
+        "title": "ARY GRS 001 创世骑行",
+        "public_summary": "由 Organizer 主动披露的公开赛事页面。",
         "organizer_public_profile": {
             "name": "DevCompass Racing",
             "public_id": "org_devcompass_racing",
@@ -273,7 +276,7 @@ ary_public_projection_store: Dict[str, Dict[str, Any]] = {
         "series_id": "ary-grs-001",
         "projection_version": "v1.0.0",
         "projection_type": "race_profile",
-        "title": "ARY GRS 001 Genesis Ride",
+        "title": "ARY GRS 001 创世骑行",
         "public_registration_count": 1,
         "public_participant_aliases": ["Neon Alpha"],
         "public_participation_status": "Open for disclosed public registration",
@@ -281,12 +284,12 @@ ary_public_projection_store: Dict[str, Dict[str, Any]] = {
             {
                 "type": "summary",
                 "visibility": "public",
-                "content": "Organizer-approved public summary for ARY display.",
+                "content": "Organizer 批准披露、供 ARY 展示的公开摘要。",
             },
             {
                 "type": "public_entry",
                 "visibility": "public",
-                "content": "Use the ARY public entry button. The registration fact will be written only to Organizer Server.",
+                "content": "通过 ARY 公开入口发起报名；报名事实只写入 Organizer Server。",
             },
         ],
         "source": {
@@ -401,6 +404,91 @@ def find_forbidden_leaks(payload: Any) -> Dict[str, list[str]]:
         "forbidden_key_paths": find_forbidden_keys(payload),
         "suspicious_value_paths": find_suspicious_values(payload),
     }
+
+
+CORE_PRIVATE_SOURCE_FACT_KEYS = [
+    "private_rulebook",
+    "private_submissions",
+    "submission_code",
+    "riding_records",
+    "execution_logs",
+    "dcr_judgement_trace",
+    "review_evidence",
+    "retro_notes",
+    "private_score_basis",
+    "full_result_evidence",
+]
+
+
+def payload_contains_key(payload: Any, target_key: str) -> bool:
+    if isinstance(payload, dict):
+        return any(key == target_key or payload_contains_key(value, target_key) for key, value in payload.items())
+    if isinstance(payload, list):
+        return any(payload_contains_key(item, target_key) for item in payload)
+    return False
+
+
+def summarize_organizer_private_source() -> Dict[str, Any]:
+    """
+    Evidence-safe Organizer summary.
+
+    This intentionally returns field names and existence flags only. It does not
+    return private source fact values, code, riding records, logs, or evidence.
+    """
+    private_source = local_organizer_db["private_race_source"]
+    return {
+        "storage": "local_organizer_db.private_race_source",
+        "values_redacted": True,
+        "private_source_field_names": sorted(private_source.keys()),
+        "core_private_source_fact_presence": {
+            key: payload_contains_key(private_source, key)
+            for key in CORE_PRIVATE_SOURCE_FACT_KEYS
+        },
+    }
+
+
+def build_demo_projection_payload(race_public_id: str, version: str, projection_hash: str) -> PublicProjectionPayload:
+    return PublicProjectionPayload(
+        race_public_id=race_public_id,
+        series_id="ary-grs-001",
+        projection_version=version,
+        projection_type="race_profile",
+        title="ARY GRS 001 Projection Integrity Demo",
+        public_registration_count=0,
+        public_participant_aliases=[],
+        public_participation_status="Projection integrity verification only.",
+        display_sections=[
+            DisplaySectionPayload(
+                type="summary",
+                content="Public projection version/hash verification payload.",
+            )
+        ],
+        source={
+            "organizer_public_id": "org_devcompass_racing",
+            "projection_hash": projection_hash,
+            "signature": f"mock-signature-{version}-{projection_hash}",
+        },
+        published_at=utc_now(),
+    )
+
+
+def submit_projection_for_demo(race_public_id: str, version: str, projection_hash: str) -> Dict[str, Any]:
+    try:
+        result = submit_public_projection(
+            race_public_id,
+            build_demo_projection_payload(race_public_id, version, projection_hash),
+        )
+        return {
+            "accepted": True,
+            "status_code": 200,
+            "result": result,
+        }
+    except HTTPException as exc:
+        return {
+            "accepted": False,
+            "status_code": exc.status_code,
+            "detail": exc.detail,
+        }
 
 
 @ary_app.post("/api/races/metadata")
@@ -519,8 +607,8 @@ def build_public_metadata_from_private_source() -> Dict[str, Any]:
     return {
         "race_public_id": private_source["race_public_id"],
         "series_id": "ary-grs-001",
-        "title": "ARY GRS 001 Genesis Ride",
-        "public_summary": "Organizer-disclosed public race page.",
+        "title": "ARY GRS 001 创世骑行",
+        "public_summary": "由 Organizer 主动披露的公开赛事页面。",
         "organizer_public_profile": {
             "name": "DevCompass Racing",
             "public_id": "org_devcompass_racing",
@@ -559,7 +647,7 @@ def build_public_projection_from_private_source(race_public_id: str) -> Dict[str
         "series_id": "ary-grs-001",
         "projection_version": "v1.0.1",
         "projection_type": "race_profile",
-        "title": "ARY GRS 001 Genesis Ride",
+        "title": "ARY GRS 001 创世骑行",
         "public_registration_count": len(public_aliases),
         "public_participant_aliases": public_aliases,
         "public_participation_status": "Open for disclosed public registration",
@@ -567,27 +655,27 @@ def build_public_projection_from_private_source(race_public_id: str) -> Dict[str
             {
                 "type": "summary",
                 "visibility": "public",
-                "content": "Organizer-approved public summary for ARY display.",
+                "content": "Organizer 批准披露、供 ARY 展示的公开摘要。",
             },
             {
                 "type": "public_entry",
                 "visibility": "public",
-                "content": "Use the ARY public entry button. Registration is proxied, then stored only by Organizer Server.",
+                "content": "通过 ARY 公开入口发起报名；请求经 ARY 代理转发，报名事实只由 Organizer Server 保存。",
             },
             {
                 "type": "public_status",
                 "visibility": "public",
-                "content": "Public registration is open while Organizer Server is reachable.",
+                "content": "Organizer Server 可达时，公开报名入口保持开放。",
             },
             {
                 "type": "public_registration_count",
                 "visibility": "public",
-                "content": f"Public registration count disclosed by Organizer: {len(public_aliases)}.",
+                "content": f"Organizer 主动披露的公开报名计数：{len(public_aliases)}。",
             },
             {
                 "type": "public_participant_aliases",
                 "visibility": "public",
-                "content": "Public participant aliases: " + (", ".join(public_aliases) if public_aliases else "No public aliases disclosed yet."),
+                "content": "公开参与者昵称：" + (", ".join(public_aliases) if public_aliases else "暂无公开昵称披露。"),
             },
         ],
         "source": {
@@ -682,21 +770,36 @@ def explore_race_001() -> HTMLResponse:
         for tag in tags
     )
     organizer = metadata.get("organizer_public_profile", {})
-    organizer_name = html.escape(organizer.get("name", "Unknown Organizer"))
+    organizer_name = html.escape(organizer.get("name", "未知 Organizer"))
     organizer_public_id = html.escape(organizer.get("public_id", "unknown"))
-    organizer_connectivity = html.escape(metadata.get("organizer_connectivity", "unknown"))
+    connectivity_map = {
+        "online": "在线",
+        "offline": "离线",
+        "unknown": "未知",
+        "not_checked_in_this_process": "未检查",
+    }
+    organizer_connectivity_raw = str(metadata.get("organizer_connectivity", "unknown"))
+    organizer_connectivity = html.escape(connectivity_map.get(organizer_connectivity_raw, organizer_connectivity_raw))
     entry_target = "#ride-agent"
 
     sections = projection.get("display_sections", []) if projection else []
+    section_title_map = {
+        "summary": "公开摘要",
+        "public_entry": "公开报名入口",
+        "public_status": "公开状态",
+        "public_registration_count": "公开报名计数",
+        "public_participant_aliases": "公开参与者昵称",
+    }
     section_html = ""
     for index, section in enumerate(sections, start=1):
-        section_type = html.escape(str(section.get("type", "public_section")).replace("_", " ").title())
+        raw_section_type = str(section.get("type", "public_section"))
+        section_type = html.escape(section_title_map.get(raw_section_type, raw_section_type.replace("_", " ").title()))
         section_content = html.escape(str(section.get("content", "")))
         section_link = section.get("link")
         link_html = ""
         if section_link:
             safe_link = html.escape(str(section_link))
-            link_html = f'<a class="mt-4 inline-flex items-center gap-2 text-sm font-semibold text-cyan-200 hover:text-white" href="{safe_link}"><i class="fa-solid fa-arrow-up-right-from-square"></i> Open disclosed link</a>'
+            link_html = f'<a class="mt-4 inline-flex items-center gap-2 text-sm font-semibold text-cyan-200 hover:text-white" href="{safe_link}"><i class="fa-solid fa-arrow-up-right-from-square"></i> 打开披露链接</a>'
         section_html += f"""
         <article class="group relative overflow-hidden rounded-lg border border-slate-700/70 bg-slate-900/55 p-5 shadow-2xl shadow-cyan-950/20 backdrop-blur-md transition hover:border-cyan-300/40">
           <div class="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-cyan-300/70 to-transparent opacity-70"></div>
@@ -714,16 +817,26 @@ def explore_race_001() -> HTMLResponse:
     if not section_html:
         section_html = """
         <article class="rounded-lg border border-slate-700/70 bg-slate-900/55 p-5 text-slate-300 backdrop-blur-md">
-          No public projection sections have been disclosed by the Organizer yet.
+          Organizer 尚未披露公开投影内容。
         </article>
         """
 
     is_open = public_status == "Open"
+    status_display_map = {
+        "Draft": "草稿",
+        "Open": "开放",
+        "Active": "进行中",
+        "Completed": "已完成",
+        "Archived": "已归档",
+        "Withdrawn": "已撤回",
+        "Suspended": "挂起",
+    }
+    public_status_display = html.escape(status_display_map.get(public_status, public_status))
     status_light = "bg-cyan-300 shadow-cyan-300/70" if is_open else "bg-amber-300 shadow-amber-300/70"
     status_ring = "border-cyan-300/40 bg-cyan-300/10 text-cyan-100" if is_open else "border-amber-300/40 bg-amber-300/10 text-amber-100"
 
     page_html = f"""<!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -804,14 +917,14 @@ def explore_race_001() -> HTMLResponse:
             <span class="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 font-mono text-xs text-slate-300">{race_public_id}</span>
             <span class="inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-bold uppercase {status_ring}">
               <span class="h-2.5 w-2.5 animate-status-pulse rounded-full {status_light} shadow-lg"></span>
-              {public_status}
+              {public_status_display}
             </span>
           </div>
         </div>
         <div class="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-900/70 p-1 text-sm text-slate-300">
-          <a class="rounded-md bg-slate-800 px-4 py-2 text-white" href="#"><i class="fa-regular fa-circle-dot mr-2 text-cyan-300"></i>Overview</a>
-          <a class="rounded-md px-4 py-2 hover:bg-slate-800" href="#"><i class="fa-solid fa-timeline mr-2"></i>Public Logs</a>
-          <a class="rounded-md px-4 py-2 hover:bg-slate-800" href="#"><i class="fa-solid fa-chart-line mr-2"></i>Insights</a>
+          <a class="rounded-md bg-slate-800 px-4 py-2 text-white" href="#"><i class="fa-regular fa-circle-dot mr-2 text-cyan-300"></i>概览</a>
+          <a class="rounded-md px-4 py-2 hover:bg-slate-800" href="#"><i class="fa-solid fa-timeline mr-2"></i>公开记录</a>
+          <a class="rounded-md px-4 py-2 hover:bg-slate-800" href="/evidence-dashboard"><i class="fa-solid fa-chart-line mr-2"></i>证据</a>
         </div>
       </div>
     </div>
@@ -821,15 +934,15 @@ def explore_race_001() -> HTMLResponse:
     <section class="gradient-frame overflow-hidden rounded-xl bg-slate-900/45 p-5 shadow-2xl shadow-purple-950/25 backdrop-blur-md">
       <div class="grid gap-4 md:grid-cols-3">
         <div class="rounded-lg border border-slate-700/70 bg-slate-950/45 p-4">
-          <div class="text-xs uppercase tracking-[0.2em] text-slate-500">Projection Version</div>
+          <div class="text-xs uppercase tracking-[0.2em] text-slate-500">投影版本</div>
           <div class="mt-2 font-mono text-lg font-bold text-cyan-200">{projection_version}</div>
         </div>
         <div class="rounded-lg border border-slate-700/70 bg-slate-950/45 p-4">
-          <div class="text-xs uppercase tracking-[0.2em] text-slate-500">Last Update</div>
+          <div class="text-xs uppercase tracking-[0.2em] text-slate-500">最近更新</div>
           <div class="mt-2 font-mono text-lg font-bold text-slate-100">{last_update}</div>
         </div>
         <div class="rounded-lg border border-slate-700/70 bg-slate-950/45 p-4">
-          <div class="text-xs uppercase tracking-[0.2em] text-slate-500">Series Tags</div>
+          <div class="text-xs uppercase tracking-[0.2em] text-slate-500">系列标签</div>
           <div class="mt-3 flex flex-wrap gap-2">{tag_html}</div>
         </div>
       </div>
@@ -840,7 +953,7 @@ def explore_race_001() -> HTMLResponse:
         <div class="grid-surface gradient-frame overflow-hidden rounded-xl bg-slate-900/45 p-6 shadow-2xl shadow-cyan-950/20 backdrop-blur-md">
           <div class="flex items-center gap-3 border-b border-slate-700/70 pb-4">
             <i class="fa-regular fa-file-lines text-cyan-300"></i>
-            <h1 class="text-xl font-extrabold tracking-tight text-white">Public Summary</h1>
+            <h1 class="text-xl font-extrabold tracking-tight text-white">公开摘要</h1>
           </div>
           <p class="mt-5 max-w-3xl text-base leading-8 text-slate-200">{summary}</p>
         </div>
@@ -855,14 +968,14 @@ def explore_race_001() -> HTMLResponse:
           <div class="flex items-center gap-4">
             <div class="flex h-14 w-14 items-center justify-center rounded-xl bg-gradient-to-br from-cyan-300 to-purple-500 text-xl font-black text-slate-950">DC</div>
             <div>
-              <div class="text-xs uppercase tracking-[0.22em] text-slate-500">Organizer</div>
+              <div class="text-xs uppercase tracking-[0.22em] text-slate-500">组织者</div>
               <h2 class="mt-1 text-lg font-bold text-white">{organizer_name}</h2>
               <p class="font-mono text-xs text-cyan-200">{organizer_public_id}</p>
             </div>
           </div>
           <div class="mt-5 rounded-lg border border-slate-700/70 bg-slate-950/45 p-4">
             <div class="flex items-center justify-between text-sm">
-              <span class="text-slate-400">Organizer Link</span>
+              <span class="text-slate-400">Organizer 连接状态</span>
               <span class="font-mono text-cyan-200">{organizer_connectivity}</span>
             </div>
             <div class="mt-3 h-2 rounded-full bg-slate-800">
@@ -874,18 +987,18 @@ def explore_race_001() -> HTMLResponse:
         <form id="ride-agent" method="post" action="/proxy/race/001/register-form" class="group relative block overflow-hidden rounded-xl p-[1px] shadow-2xl shadow-cyan-950/30">
           <span class="absolute inset-0 animate-flow bg-[linear-gradient(90deg,#22d3ee,#a855f7,#22d3ee)] bg-[length:200%_200%]"></span>
           <div class="relative rounded-xl bg-slate-950 p-5 transition group-hover:bg-slate-900">
-            <div class="mb-4 text-center text-lg font-black tracking-wide text-white">⚡ RIDE AGENT</div>
-            <label class="block text-xs font-semibold uppercase tracking-[0.2em] text-cyan-200" for="rider_id">Public Rider ID / nickname</label>
+            <div class="mb-4 text-center text-lg font-black tracking-wide text-white">报名代理</div>
+            <label class="block text-xs font-semibold uppercase tracking-[0.2em] text-cyan-200" for="rider_id">公开 Rider ID / 昵称</label>
             <input class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm text-white outline-none focus:border-cyan-300" id="rider_id" name="rider_id" value="rider_demo_001" />
             <input type="hidden" name="client_request_id" value="form_req_001" />
-            <button class="mt-4 w-full rounded-lg bg-gradient-to-r from-cyan-300 to-purple-400 px-4 py-3 font-black text-slate-950" type="submit">Submit via ARY Proxy</button>
+            <button class="mt-4 w-full rounded-lg bg-gradient-to-r from-cyan-300 to-purple-400 px-4 py-3 font-black text-slate-950" type="submit">通过 ARY Proxy 提交</button>
             <p class="mt-4 text-xs leading-5 text-cyan-50">公开报名摘要可以由 Organizer 披露；代码、完整骑行记录和评审证据仍留在 Organizer / DCR。</p>
           </div>
         </form>
 
         <div class="rounded-xl border border-slate-700/70 bg-slate-900/50 p-5 text-sm leading-6 text-slate-300 backdrop-blur-md">
-          <div class="mb-2 font-mono text-xs uppercase tracking-[0.2em] text-purple-200">Boundary</div>
-          ARY renders public disclosures only. Public registration summaries may appear here, but code, riding records, execution logs, judgement traces, review evidence, and retro notes remain in the Organizer-controlled DCR node.
+          <div class="mb-2 font-mono text-xs uppercase tracking-[0.2em] text-purple-200">边界</div>
+          ARY 只渲染公开披露内容。公开报名摘要可以出现在这里，但代码、完整骑行记录、执行日志、判断链、评审证据和复盘材料仍留在 Organizer 控制的 DCR 节点中。
         </div>
       </aside>
     </div>
@@ -893,7 +1006,7 @@ def explore_race_001() -> HTMLResponse:
 
   <footer class="mx-auto max-w-7xl px-5 pb-8">
     <div class="rounded-xl border border-cyan-300/20 bg-cyan-300/10 px-5 py-4 text-sm font-semibold text-cyan-100 backdrop-blur-md">
-      🛡️ This Race follows Decentralized Data Sovereignty. Source facts are safely stored in Organizer's local DCR node.
+      本赛事遵循去中心化数据主权原则。源事实安全保存在 Organizer 本地 DCR 节点中。
     </div>
   </footer>
 </body>
@@ -1100,6 +1213,251 @@ def debug_privacy_check() -> Dict[str, Any]:
         "registration_disclosure_policy": "Registration count and public aliases may be disclosed by Organizer as Public Projection.",
         "note": "Organizer facts are shown here only because this is a same-process PoC debug endpoint; ARY runtime stores do not reference code, riding records, execution logs, judgement trace, review evidence, or retro notes.",
     }
+
+
+@ary_app.get("/debug/projection-version-hash-demo")
+def debug_projection_version_hash_demo() -> Dict[str, Any]:
+    """
+    Re-runnable projection integrity demo.
+
+    Uses a dedicated public demo race so the main race_001 journey remains
+    unchanged. It verifies old-version rejection, same-version idempotency,
+    same-version content drift rejection, and newer-version acceptance.
+    """
+    race_public_id = "race_projection_integrity_demo"
+    ary_public_metadata_store[race_public_id] = {
+        "race_public_id": race_public_id,
+        "series_id": "ary-grs-001",
+        "title": "Projection Integrity Demo",
+        "public_summary": "Public metadata for version/hash verification.",
+        "organizer_public_profile": {
+            "name": "DevCompass Racing",
+            "public_id": "org_devcompass_racing",
+        },
+        "public_status": "Open",
+        "entry_mode": "external_organizer_channel",
+        "organizer_endpoints": {},
+        "time_window": {},
+        "tags": ["projection-integrity"],
+        "projection_version": None,
+        "updated_at": utc_now(),
+    }
+    ary_public_projection_store.pop(race_public_id, None)
+
+    initial_submit = submit_projection_for_demo(race_public_id, "v1.0.0", "sha256:vh-demo-base")
+    older_version = submit_projection_for_demo(race_public_id, "v0.9.0", "sha256:vh-demo-older")
+    same_version_same_hash = submit_projection_for_demo(race_public_id, "v1.0.0", "sha256:vh-demo-base")
+    same_version_different_hash = submit_projection_for_demo(race_public_id, "v1.0.0", "sha256:vh-demo-drift")
+    newer_version = submit_projection_for_demo(race_public_id, "v1.0.1", "sha256:vh-demo-newer")
+
+    assert_ary_public_stores_are_clean()
+
+    return {
+        "boundary": "Public Yard stores Organizer-disclosed Public Projection only",
+        "race_public_id": race_public_id,
+        "cases": {
+            "initial_submit": initial_submit,
+            "older_version_rejected": {
+                "passed": older_version["status_code"] == 409,
+                "response": older_version,
+            },
+            "same_version_same_hash_idempotent": {
+                "passed": same_version_same_hash["accepted"]
+                and same_version_same_hash.get("result", {}).get("idempotent") is True,
+                "response": same_version_same_hash,
+            },
+            "same_version_different_hash_rejected": {
+                "passed": same_version_different_hash["status_code"] == 409,
+                "response": same_version_different_hash,
+            },
+            "newer_version_accepted": {
+                "passed": newer_version["accepted"]
+                and newer_version.get("result", {}).get("idempotent") is False,
+                "response": newer_version,
+            },
+        },
+        "current_projection_version": ary_public_projection_store[race_public_id]["projection_version"],
+        "current_projection_hash": ary_public_projection_store[race_public_id]["source"]["projection_hash"],
+        "private_source_facts_used": False,
+    }
+
+
+@ary_app.get("/debug/evidence-dashboard")
+def debug_evidence_dashboard() -> Dict[str, Any]:
+    """
+    Unified evidence entrypoint.
+
+    ARY-side evidence returns public store summaries, leak checks, proxy
+    zero-persistence evidence, projection integrity pointers, and connectivity.
+    Organizer private source facts are summarized by field name only.
+    """
+    assert_ary_public_stores_are_clean()
+    leaks = find_forbidden_leaks(
+        {
+            "metadata": ary_public_metadata_store,
+            "projection": ary_public_projection_store,
+            "connectivity": ary_public_connectivity_state,
+        }
+    )
+    current_projection = ary_public_projection_store.get("race_001", {})
+    current_metadata = ary_public_metadata_store.get("race_001", {})
+    return {
+        "boundary": "Public Yard, Private Race Source",
+        "debug_visibility": {
+            "organizer_debug": "Organizer-local only; may expose private source facts and must not be used as ARY public evidence.",
+            "ary_debug": "Public Yard evidence only; must not expose private source fact values.",
+            "organizer_private_values_redacted_here": True,
+        },
+        "organizer_private_source_summary": summarize_organizer_private_source(),
+        "ary_public_store_summary": {
+            "metadata_race_ids": sorted(ary_public_metadata_store.keys()),
+            "projection_race_ids": sorted(ary_public_projection_store.keys()),
+            "connectivity_race_ids": sorted(ary_public_connectivity_state.keys()),
+            "race_001_metadata_fields": sorted(current_metadata.keys()),
+            "race_001_projection_fields": sorted(current_projection.keys()),
+        },
+        "ary_privacy_check": {
+            "ary_public_stores_contain_core_private_source_facts": bool(
+                leaks["forbidden_key_paths"] or leaks["suspicious_value_paths"]
+            ),
+            "forbidden_key_paths": leaks["forbidden_key_paths"],
+            "suspicious_value_paths": leaks["suspicious_value_paths"],
+        },
+        "proxy_zero_persistence": {
+            "ary_registration_store": "absent",
+            "ary_rider_db": "absent",
+            "ary_race_fact_db": "absent",
+            "registration_fact_writer": "Organizer Server only",
+            "organizer_registered_rider_count": len(local_organizer_db["race_001_registered_riders"]),
+            "ary_returns_rider_fact_database": False,
+        },
+        "projection_integrity": {
+            "race_001_projection_version": current_projection.get("projection_version"),
+            "race_001_projection_hash": current_projection.get("source", {}).get("projection_hash"),
+            "race_001_signature_present": bool(current_projection.get("source", {}).get("signature")),
+            "re_runnable_demo": "/debug/projection-version-hash-demo",
+        },
+        "connectivity": {
+            "race_001": ary_public_connectivity_state.get(
+                "race_001",
+                {
+                    "public_status": current_metadata.get("public_status"),
+                    "organizer_connectivity": "not_checked_in_this_process",
+                },
+            )
+        },
+        "rejection_demo": debug_rejection_demo(),
+        "evidence_links": {
+            "public_page": "/explore/race/001",
+            "ary_store": "/debug/ary-store",
+            "privacy_check": "/debug/privacy-check",
+            "demo_journey": "/debug/demo-journey",
+            "projection_version_hash_demo": "/debug/projection-version-hash-demo",
+            "organizer_store_local_only": f"{ORGANIZER_BASE_URL}/debug/organizer-store",
+        },
+    }
+
+
+@ary_app.get("/evidence-dashboard", response_class=HTMLResponse)
+def evidence_dashboard_page() -> HTMLResponse:
+    evidence = debug_evidence_dashboard()
+    privacy = evidence["ary_privacy_check"]
+    proxy = evidence["proxy_zero_persistence"]
+    projection = evidence["projection_integrity"]
+    connectivity = evidence["connectivity"]["race_001"]
+    private_summary = evidence["organizer_private_source_summary"]
+    metadata_ids = ", ".join(evidence["ary_public_store_summary"]["metadata_race_ids"])
+    projection_ids = ", ".join(evidence["ary_public_store_summary"]["projection_race_ids"])
+    private_fields = ", ".join(private_summary["private_source_field_names"])
+    leak_status = "PASS" if not privacy["ary_public_stores_contain_core_private_source_facts"] else "FAIL"
+    proxy_status = "PASS" if proxy["ary_registration_store"] == "absent" else "FAIL"
+
+    page_html = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ARY GRS 001 Evidence Dashboard</title>
+  <style>
+    :root {{
+      color-scheme: dark;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #101418;
+      color: #edf2f7;
+    }}
+    body {{ margin: 0; background: #101418; }}
+    main {{ max-width: 1120px; margin: 0 auto; padding: 32px 20px 48px; }}
+    header {{ display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; margin-bottom: 24px; }}
+    h1 {{ margin: 0; font-size: 30px; letter-spacing: 0; }}
+    h2 {{ margin: 0 0 12px; font-size: 17px; }}
+    a {{ color: #67e8f9; text-decoration: none; }}
+    .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }}
+    .panel {{ border: 1px solid #334155; border-radius: 8px; background: #18212b; padding: 16px; }}
+    .status {{ display: inline-flex; border-radius: 999px; padding: 4px 10px; font-weight: 800; font-size: 12px; }}
+    .pass {{ background: #064e3b; color: #bbf7d0; }}
+    .warn {{ background: #78350f; color: #fde68a; }}
+    .mono {{ font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 13px; color: #cbd5e1; overflow-wrap: anywhere; }}
+    .muted {{ color: #94a3b8; }}
+    ul {{ margin: 8px 0 0; padding-left: 18px; }}
+    li {{ margin: 5px 0; }}
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>ARY GRS 001 Evidence Dashboard</h1>
+        <p class="muted">Unified evidence for Public Yard / Private Race Source.</p>
+      </div>
+      <nav class="mono"><a href="/explore/race/001">Public Page</a> · <a href="/debug/evidence-dashboard">JSON</a></nav>
+    </header>
+    <section class="grid">
+      <article class="panel">
+        <h2>Privacy Check <span class="status {'pass' if leak_status == 'PASS' else 'warn'}">{leak_status}</span></h2>
+        <div class="mono">forbidden_key_paths: {len(privacy["forbidden_key_paths"])}</div>
+        <div class="mono">suspicious_value_paths: {len(privacy["suspicious_value_paths"])}</div>
+      </article>
+      <article class="panel">
+        <h2>Proxy Zero Persistence <span class="status {'pass' if proxy_status == 'PASS' else 'warn'}">{proxy_status}</span></h2>
+        <div class="mono">ary_registration_store: {proxy["ary_registration_store"]}</div>
+        <div class="mono">organizer_registered_rider_count: {proxy["organizer_registered_rider_count"]}</div>
+      </article>
+      <article class="panel">
+        <h2>Projection Integrity</h2>
+        <div class="mono">version: {html.escape(str(projection["race_001_projection_version"]))}</div>
+        <div class="mono">hash: {html.escape(str(projection["race_001_projection_hash"]))}</div>
+        <div class="mono"><a href="{projection["re_runnable_demo"]}">run version/hash demo</a></div>
+      </article>
+      <article class="panel">
+        <h2>Connectivity</h2>
+        <div class="mono">status: {html.escape(str(connectivity.get("public_status")))}</div>
+        <div class="mono">organizer: {html.escape(str(connectivity.get("organizer_connectivity")))}</div>
+      </article>
+    </section>
+    <section class="grid" style="margin-top: 14px;">
+      <article class="panel">
+        <h2>ARY Public Stores</h2>
+        <div class="mono">metadata: {html.escape(metadata_ids)}</div>
+        <div class="mono">projection: {html.escape(projection_ids)}</div>
+      </article>
+      <article class="panel">
+        <h2>Organizer Private Source Summary</h2>
+        <p class="muted">Values redacted. Field names only.</p>
+        <div class="mono">{html.escape(private_fields)}</div>
+      </article>
+      <article class="panel">
+        <h2>Debug Boundary</h2>
+        <ul>
+          <li>Organizer debug is local-only and may expose private source facts.</li>
+          <li>ARY debug must not expose private source fact values.</li>
+          <li>Evidence dashboard shows private field names only.</li>
+        </ul>
+      </article>
+    </section>
+  </main>
+</body>
+</html>"""
+    return HTMLResponse(page_html)
 
 
 if __name__ == "__main__":
